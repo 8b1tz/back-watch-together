@@ -11,8 +11,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 import threading
 
-from backend import models, schemas
-from backend.database import Base, engine, get_db, SessionLocal
+from . import models, schemas
+from .database import Base, engine, get_db, SessionLocal
 
 Base.metadata.create_all(bind=engine)
 

@@ -6,7 +6,7 @@ from passlib.hash import pbkdf2_sha256
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, Float
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
-from backend.database import Base
+from .database import Base
 
 
 def legacy_hash_password(password: str) -> str:
