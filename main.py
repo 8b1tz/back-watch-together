@@ -17,7 +17,15 @@ from database import Base, engine, get_db, SessionLocal
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Video Sharing Platform API", version="0.1.0")
+is_prod = os.getenv("ENV") == "prod"
+
+app = FastAPI(
+    title="Video Sharing Platform API",
+    version="0.1.0",
+    docs_url=None if is_prod else "/docs",
+    redoc_url=None if is_prod else "/redoc",
+    openapi_url=None if is_prod else "/openapi.json",
+)
 
 default_origins = [
     "http://localhost:5173",
