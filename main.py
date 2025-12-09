@@ -3,7 +3,6 @@ from typing import Dict, List
 
 import asyncio
 import os
-import uuid
 from datetime import datetime, timedelta
 import jwt
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
@@ -66,8 +65,6 @@ def _now_iso() -> str:
 
 
 def _ensure_room_state(room: models.Room):
-    if not getattr(room, "slug", None):
-        room.slug = str(uuid.uuid4())
     if room.id not in room_playback_state:
         room_playback_state[room.id] = {
             "video_url": room.video_url,
@@ -178,13 +175,7 @@ def login(user_in: schemas.UserLogin, db: Session = Depends(get_db)):
 @app.get("/rooms", response_model=List[schemas.RoomOut])
 def list_rooms(db: Session = Depends(get_db)):
     _cleanup_empty_rooms(db)
-    rooms = db.query(models.Room).filter(models.Room.participants.any()).all()
-    for r in rooms:
-        if not getattr(r, "slug", None):
-            r.slug = str(uuid.uuid4())
-            db.commit()
-            db.refresh(r)
-    return rooms
+    return db.query(models.Room).filter(models.Room.participants.any()).all()
 
 
 @app.post("/rooms", response_model=schemas.RoomOut, status_code=status.HTTP_201_CREATED)
@@ -215,15 +206,6 @@ def create_room(room_in: schemas.RoomCreate, db: Session = Depends(get_db)):
 @app.get("/rooms/{room_id}", response_model=schemas.RoomOut)
 def get_room(room_id: int, db: Session = Depends(get_db)):
     room = db.get(models.Room, room_id)
-    if not room:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
-    _ensure_room_state(room)
-    return room
-
-
-@app.get("/rooms/code/{slug}", response_model=schemas.RoomOut)
-def get_room_by_slug(slug: str, db: Session = Depends(get_db)):
-    room = db.query(models.Room).filter(models.Room.slug == slug).first()
     if not room:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
     _ensure_room_state(room)
@@ -270,21 +252,6 @@ def join_room(room_id: int, join_req: schemas.JoinRoomRequest, db: Session = Dep
     user = db.get(models.User, join_req.user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    active_ban = (
-        db.query(models.RoomBan)
-        .filter(
-            models.RoomBan.room_id == room_id,
-            models.RoomBan.user_id == user.id,
-            models.RoomBan.banned_until > datetime.utcnow(),
-        )
-        .first()
-    )
-    if active_ban:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Usuario banido ate {active_ban.banned_until.isoformat()}",
-        )
 
     if not room.verify_password(join_req.password):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid room password")
@@ -359,20 +326,6 @@ def kick_participant(room_id: int, kick: schemas.KickRequest, background_tasks: 
         # Notifica user expulso via WebSocket
         background_tasks.add_task(_broadcast, room_id, {"type": "kicked", "user_id": user.id})
         _add_system_message(db, room.id, user, f"{user.username} foi expulso da sala")
-
-        ban = (
-            db.query(models.RoomBan)
-            .filter(models.RoomBan.room_id == room_id, models.RoomBan.user_id == user.id)
-            .first()
-        )
-        now = datetime.utcnow()
-        if ban:
-            base_time = ban.banned_until if ban.banned_until > now else now
-            ban.banned_until = base_time + timedelta(minutes=5)
-        else:
-            ban = models.RoomBan(room_id=room_id, user_id=user.id, banned_until=now + timedelta(minutes=5))
-            db.add(ban)
-        db.commit()
     return room
 
 

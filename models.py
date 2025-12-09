@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import Optional
 import hashlib
-import uuid
 
 from passlib.hash import pbkdf2_sha256
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, Float
@@ -68,7 +67,6 @@ class Room(Base):
     playback_position: Mapped[float] = mapped_column(Float, default=0.0)
     is_playing: Mapped[bool] = mapped_column(Boolean, default=False)
     playback_updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    slug: Mapped[str] = mapped_column(String(64), unique=True, index=True, default=lambda: str(uuid.uuid4()))
 
     creator = relationship("User", back_populates="rooms")
     participants = relationship(
@@ -96,15 +94,6 @@ class Room(Base):
             return False
         except Exception:
             return False
-
-
-class RoomBan(Base):
-    __tablename__ = "room_bans"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    room_id: Mapped[int] = mapped_column(Integer, ForeignKey("rooms.id"), index=True)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
-    banned_until: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 
 class Message(Base):
