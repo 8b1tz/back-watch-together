@@ -45,6 +45,7 @@ class RoomUpdate(BaseModel):
 
 class RoomOut(BaseModel):
     id: int
+    slug: str
     name: str
     video_url: str
     is_private: bool
