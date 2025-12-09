@@ -1,19 +1,19 @@
-﻿from datetime import datetime
+﻿import asyncio
+import os
+import threading
+from datetime import datetime, timedelta
 from typing import Dict, List
 
-import asyncio
-import os
-from datetime import datetime, timedelta
 import jwt
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import (Depends, FastAPI, HTTPException, WebSocket,
+                     WebSocketDisconnect, status)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
-import threading
 
 import models
 import schemas
-from database import Base, engine, get_db, SessionLocal
+from database import Base, SessionLocal, engine, get_db
 
 Base.metadata.create_all(bind=engine)
 
@@ -28,12 +28,7 @@ app = FastAPI(
 )
 
 default_origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:4173",
-    "http://127.0.0.1:4173",
-    "http://localhost:8000",
-    "https://magical-frangollo-2c217a.netlify.app",
+    "https://front-watch-together.netlify.app/",
 ]
 allow_origins = [
     origin.strip()
@@ -128,7 +123,7 @@ def get_current_user(
 
 async def _broadcast(room_id: int, message: dict):
     conns = room_connections.get(room_id, [])
-    living = []
+    living: List[WebSocket] = []
     for ws in conns:
         try:
             await ws.send_json(message)
@@ -228,7 +223,7 @@ def update_room(room_id: int, room_in: schemas.RoomUpdate, db: Session = Depends
     db.commit()
     db.refresh(room)
     _ensure_room_state(room)
-    # Notificar video atualizado
+    # Notificar video atualizado (no estado em memória)
     room_playback_state[room.id]["video_url"] = room.video_url
     return room
 
@@ -292,8 +287,9 @@ def leave_room(room_id: int, join_req: schemas.JoinRoomRequest, db: Session = De
         db.refresh(room)
         _add_system_message(db, room.id, user, f"{user.username} saiu da sala")
 
-    # se sala ficar vazia (apos remover alguÃ©m), agenda exclusao em 2 minutos
+    # se sala ficar vazia (apos remover alguém), agenda exclusao em X segundos
     if removed and not room.participants:
+
         def delete_room_later():
             with SessionLocal() as bg_db:
                 stale = bg_db.get(models.Room, room_id)
@@ -310,7 +306,11 @@ def leave_room(room_id: int, join_req: schemas.JoinRoomRequest, db: Session = De
 
 
 @app.post("/rooms/{room_id}/kick", response_model=schemas.RoomOut)
-def kick_participant(room_id: int, kick: schemas.KickRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def kick_participant(
+    room_id: int,
+    kick: schemas.KickRequest,
+    db: Session = Depends(get_db),
+):
     room = db.get(models.Room, room_id)
     if not room:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
@@ -323,9 +323,12 @@ def kick_participant(room_id: int, kick: schemas.KickRequest, background_tasks: 
         room.participants.remove(user)
         db.commit()
         db.refresh(room)
+
         # Notifica user expulso via WebSocket
-        background_tasks.add_task(_broadcast, room_id, {"type": "kicked", "user_id": user.id})
+        await _broadcast(room_id, {"type": "kicked", "user_id": user.id})
+
         _add_system_message(db, room.id, user, f"{user.username} foi expulso da sala")
+
     return room
 
 
@@ -349,26 +352,39 @@ def transfer_ownership(room_id: int, transfer: schemas.TransferOwnership, db: Se
 
 
 @app.post("/rooms/{room_id}/playback", response_model=schemas.RoomOut)
-def update_playback(room_id: int, payload: schemas.PlaybackUpdate, db: Session = Depends(get_db)):
+async def update_playback(
+    room_id: int,
+    payload: schemas.PlaybackUpdate,
+    db: Session = Depends(get_db),
+):
     room = db.get(models.Room, room_id)
     if not room:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
 
     # Only the creator controls playback
     if room.created_by != payload.user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only room creator can control playback")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only room creator can control playback",
+        )
 
     room.playback_position = payload.position
     room.is_playing = payload.is_playing
     room.playback_updated_at = datetime.utcnow()
     db.commit()
     db.refresh(room)
-    room_playback_state[room.id] = {
+
+    state = {
         "video_url": room.video_url,
         "position": room.playback_position,
         "is_playing": room.is_playing,
         "updated_at": room.playback_updated_at.isoformat(timespec="milliseconds") + "Z",
     }
+    room_playback_state[room.id] = state
+
+    # Notifica todos os sockets da sala com o novo estado
+    await _broadcast(room_id, {"type": "state", **state})
+
     return room
 
 
@@ -413,6 +429,7 @@ async def room_ws(websocket: WebSocket, room_id: int):
         if not room or not user_id_param:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
+
         try:
             user_id_int = int(user_id_param)
         except ValueError:
@@ -465,11 +482,13 @@ async def room_ws(websocket: WebSocket, room_id: int):
                 }
                 room_playback_state[room_id] = state
                 await _broadcast(room_id, {"type": "state", **state})
+
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
         pass
     finally:
-        room_connections[room_id] = [ws for ws in room_connections.get(room_id, []) if ws is not websocket]
+        room_connections[room_id] = [
+            ws for ws in room_connections.get(room_id, []) if ws is not websocket
+        ]
         db.close()
-
